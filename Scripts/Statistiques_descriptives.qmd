@@ -1,0 +1,1093 @@
+---
+title: "statistiques descriptives"
+format: html
+editor: visual
+---
+
+## chargement des library utiles
+
+```{r}
+library(haven)
+library(dplyr)
+library(tidyverse)   # Pour manipuler les données
+library(sf)          # Pour manipuler les shapefiles
+library(ggplot2)     # Pour la visualisation
+library(rnaturalearth)  # Pour obtenir des cartes
+library(rnaturalearthdata) 
+library(rnaturalearthhires)
+
+library(readxl)
+library(tidyr)
+library(writexl)
+```
+
+## Merging des bases
+
+```{r}
+# Charger les bases
+df1 <- read_dta("C:/Users/LENOVO/Desktop/ENSAE_PARIS/3A/TP_SDS/Data/Final/section01_correct.dta")
+df1 <- df1 |> mutate(across(where(is.labelled), as_factor))
+df2 <- read_dta("C:/Users/LENOVO/Desktop/ENSAE_PARIS/3A/TP_SDS/Data/Final/section2_correct.dta")
+df2 <- df2 |> mutate(across(where(is.labelled), as_factor))
+df3 <- read_dta("C:/Users/LENOVO/Desktop/ENSAE_PARIS/3A/TP_SDS/Data/Final/base.dta") 
+## data sur le reste de section
+df3<-df3 |> 
+    select(-c(  s01q00a, cat_socio_pere, cat_socio_mere, cat_socio_CM)) |> 
+    mutate(across(where(is.labelled), as_factor) )|> 
+    distinct(grappe, menage, .keep_all = TRUE)
+
+
+
+
+# Fusionner avec full_join
+data <- full_join(df1, df2, by = c("grappe", "menage", "s01q00a"))
+data<-data |> 
+    mutate(menage_id=paste(grappe,menage))
+
+# Fusionner avec left_join de data et la section 3 et plus
+data <- left_join(data, df3, by = c("grappe", "menage"))
+
+# groupe d'age utile: 
+
+data<-data |> 
+    mutate(age_group=ifelse(age<12,"6-12 ans","13-16 ans"))
+
+
+
+# base annexe
+
+df_pop_reg_ehcvm<-read_excel("../Script/nbre_individus_par_region_ehcvm.xlsx")
+df_pop_reg<-read_excel("../Script/population_tot_par_region_rgp.xlsx")
+df_pop_reg$region <- toupper(df_pop_reg$region)# pour endre tout en majsucule
+
+
+```
+
+\
+
+on a les mêmes indiviidus dans la base
+
+```{r}
+data |> 
+    filter(age<=16 & age>=6) |> 
+    count(wt = poids)
+data |> 
+    filter(age<=25 & age>16) |> 
+    count(wt = poids)
+
+
+```
+
+### region
+
+```{r}
+senegal_map <- ne_states(country = "Senegal", returnclass = "sf")
+senegal_map$name <- toupper(senegal_map$name)# pour rendre tout en majsucule
+
+
+```
+
+```{r}
+
+df_region <- data %>%
+    filter(age <= 16) %>%
+    group_by(menage_id) %>%  # Groupement par région et ménage
+    summarise(nb_enfant = n()) %>%  # Comptage des personnes par ménage
+    ungroup() %>%
+    left_join(data %>% select(region,menage_id, poids) %>% distinct(), by = "menage_id") |>   # Ajout du poids par ménage
+    left_join(df_pop_reg_ehcvm, by = "region") %>%  # Joindre avec les données de population par région
+    mutate(region = as.character(region),
+           region = case_when(
+               region == "KEDOUGOU" ~ "KÉDOUGOU", 
+               region == "THIES" ~ "THIÈS",
+               region == "SEDHIOU" ~ "SÉDHIOU",
+               TRUE ~ region),
+           nb_enfant_ponderees = nb_enfant * poids # Pondération par ménage
+    ) %>% 
+    group_by(region) %>% 
+    summarise(nb_enfant_total = sum(nb_enfant_ponderees, na.rm = TRUE)) %>%  # Total des individus pondérés par région
+    left_join(df_pop_reg, by = "region") %>%  # Joindre avec la population totale par région
+    mutate(nb_enfant_pour_1000 = nb_enfant_total * 1000/ Ensemble) %>%
+    rename(name = region)
+
+
+```
+
+```{r}
+
+# Joindre la carte avec les données
+senegal_data <- senegal_map %>%
+  left_join(df_region, by = "name")
+
+# chercher le centroide des regiions
+
+senegal_data <- senegal_data %>%
+  mutate(centroid = st_centroid(geometry)) %>%  # Trouver les centres des régions
+  mutate(long = st_coordinates(centroid)[,1],  # Extraire latitude/longitude
+         lat = st_coordinates(centroid)[,2])
+
+```
+
+```{r}
+ggplot(senegal_data) +
+  geom_sf(aes(fill = nb_enfant_pour_1000), color = "black") +  # Carte colorée par nombre d'enfants
+  #scale_color_paletteer_d("nord::aurora", na.value = "gray") +  # Palette de couleurs
+scale_fill_gradient(low = "white",
+                      high = "red")+
+  theme_minimal() +
+    
+  geom_text(aes(x =long, y = lat, label = name), color = "black", size = 2) +  # Ajouter les noms des régions
+  labs(#Proportion d'enfant par région au Sénégal (RGP)
+    title = "",
+    fill = "Nombre d'enfants/1000 habitants"
+  )+
+theme(
+  panel.grid = element_blank(),  # Supprime les lignes de grille
+  legend.text = element_text(color = "black"),  # Texte blanc pour la légende
+  axis.text = element_blank(),  # Supprime les étiquettes des axes
+  axis.ticks = element_blank(),  # Supprime les graduations des axes
+  axis.title = element_blank()  # Supprime les titres des axes
+)
+
+ggsave("../Image/proportion_region_tot_enfants.png", width = 10, height = 7, dpi = 300)
+```
+
+Proportion des enfants par zone et pa region
+
+```{r}
+df_region <-  data %>%
+    filter(age <= 16) %>%
+    group_by(menage_id,milieu_residence) %>%  # Groupement par région et ménage
+    summarise(nb_enfant = n()) %>%  # Comptage des personnes par ménage
+    ungroup() %>%
+    left_join(data %>% select(region,menage_id, poids) %>% distinct(), by = "menage_id") |>   # Ajout du poids par ménage
+    mutate(region = as.character(region),
+           region = case_when(
+               region == "KEDOUGOU" ~ "KÉDOUGOU", 
+               region == "THIES" ~ "THIÈS",
+               region == "SEDHIOU" ~ "SÉDHIOU",
+               TRUE ~ region),
+           nb_enfant_ponderees = nb_enfant * poids # Pondération par ménage
+    ) %>% 
+    group_by(region,milieu_residence ) %>% 
+    summarise(nb_enfant_total = sum(nb_enfant_ponderees, na.rm = TRUE),.groups = "drop") |> 
+  ungroup() %>%
+  pivot_wider(
+    names_from = milieu_residence, 
+    values_from = nb_enfant_total, 
+    values_fill = list(nb_enfant_total = 0)
+  )
+
+write_xlsx(df_region, "nombre_enfants_par_region_milieu_ehcvm.xlsx")
+
+```
+
+```{r}
+
+# Création d'une liste vide pour stocker les tables par tranche d'âge
+tables_par_age <- split(data, data$age_group) %>%
+  lapply(function(df) {
+    df %>%
+      filter(age <= 16) %>%
+    group_by(menage_id,milieu_residence) %>%  # Groupement par région et ménage
+    summarise(nb_enfant = n(),.groups = "drop") %>%  # Comptage des personnes par ménage
+    ungroup() %>%
+    left_join(df %>% select(region,menage_id, poids) %>% distinct(), by = "menage_id") |>   # Ajout du poids par ménage
+    mutate(region = as.character(region),
+           region = case_when(
+               region == "KEDOUGOU" ~ "KÉDOUGOU", 
+               region == "THIES" ~ "THIÈS",
+               region == "SEDHIOU" ~ "SÉDHIOU",
+               TRUE ~ region),
+           nb_enfant_ponderees = nb_enfant * poids # Pondération par ménage
+    ) %>% 
+    group_by(region,milieu_residence ) %>% 
+    summarise(nb_enfant_total = sum(nb_enfant_ponderees, na.rm = TRUE),.groups = "drop") |> 
+  ungroup() %>%
+  pivot_wider(
+    names_from = milieu_residence, 
+    values_from = nb_enfant_total, 
+    values_fill = list(nb_enfant_total = 0)
+  ) %>%
+      arrange(region)
+  })
+
+
+# Nettoyer les noms des feuilles Excel (remplacer caractères interdits)
+noms_feuilles <- names(tables_par_age) %>%
+  gsub("\\[|\\]|:|\\*|\\?|/|\\\\", "-", .)  # Remplace les caractères interdits
+
+# Créer une liste avec les noms propres
+names(tables_par_age) <- noms_feuilles
+
+
+
+# Enregistrer dans un fichier Excel avec une feuille par tranche d'âge
+write_xlsx(tables_par_age, "nombre_enfants_par_age_ehcvm.xlsx")
+
+print("Fichier Excel généré avec succès ! ✅")
+
+
+```
+
+### sexe et age
+
+```{r}
+ data |> 
+     filter(age<=16) |> 
+  group_by(sexe) |> 
+  summarise(total_pondere = sum(poids, na.rm = TRUE)) |> 
+  mutate(pourcentage = total_pondere / sum(total_pondere) * 100)
+```
+
+```{r}
+ggplot(data |> filter(age<=16), aes(x = age, weight = poids)) +  # Poids de sondage appliqué à chaque individu
+  geom_bar(fill = "darkred", color = "black", width = 1) +  
+  theme_classic() +
+  labs(
+    title = "",
+    x = "Âge",
+    y = "Fréquence pondérée"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")  # Centrer et mettre en gras le titre
+  )
+
+
+ggsave("../Image/distribution_age_enfant_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+```{r}
+#age de debut d'école
+ggplot(data |> filter(age<=16), aes(x = age_debut_ecole, weight = poids)) +  # Poids de sondage appliqué à chaque individu
+  geom_bar(fill = "darkred", color = "black", width = 1) +  
+  theme_classic() +
+  labs(
+    title = "",
+    x = "Âge",
+    y = "Fréquence pondérée"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")  # Centrer et mettre en gras le titre
+  )
+
+ggsave("../Image/distribution_age_debut_ecole_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+déclinaison par groupe d'age de l'age de début décole
+
+```{r}
+#age de debut d'école
+
+
+ggplot(data |> 
+         filter(age <= 16) |> 
+         group_by(age_group,milieu_residence), 
+       aes(x = age_debut_ecole, weight = poids)) +  # Appliquer le poids du ménage
+  geom_bar(fill = "darkred", color = "black", width = 1) +  
+  theme_classic() +
+  labs(
+    title = "Répartition de l'âge de début d'école par groupe d'âge",
+    x = "Âge de début d'école",
+    y = "Fréquence pondérée"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")  # Centrer et mettre en gras le titre
+  ) +
+  facet_grid(milieu_residence~ age_group)  # Séparer par groupe d'âge
+
+```
+
+### Type d'école et aphabétisation
+
+```{r}
+
+
+# Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  # Sélectionner les enfants de 16 ans et moins
+  group_by(type_ecole) |>  # Groupement par type d'école
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Calculer la somme des poids pour chaque type d'école
+    nb = n()  # Compter le nombre d'individus pour chaque type d'école
+  ) |> 
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100  # Calcul du pourcentage pondéré
+  )
+
+# Affichage du résultat
+
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(type_ecole, -pourcentage), y = pourcentage, fill = type_ecole)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  # Ajouter les valeurs sur les barres
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  # Personnaliser les couleurs
+  theme_classic() +
+  labs(#Répartition des types d'école (en %)
+    title = "",
+    x = "",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none")  # Supprimer la légende (optionnel)
+
+ggsave("../Image/repartition_type_ecole_ehcvm.png", width = 10, height = 7, dpi = 300)
+
+```
+
+```{r}
+# Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  
+  group_by(age_group, milieu_residence, type_ecole) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , .groups="drop"  # Nombre d'individus par type d'école et groupe d'âge
+  ) |>
+  group_by(age_group,milieu_residence) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(type_ecole, -pourcentage), y = pourcentage, fill = type_ecole)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "Type d'école",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 20, hjust = 1))+  # Améliorer la lisibilité) +  
+  facet_grid(milieu_residence~ age_group)  # Séparer les graphiques par groupe d'âge
+
+```
+
+Type d'école par milieu de résidence:\
+\
+
+```{r}
+ #Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  
+  group_by(milieu_residence, type_ecole) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , # Nombre d'individus par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(milieu_residence) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(type_ecole, -pourcentage), y = pourcentage, fill = type_ecole)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "Type de formation",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none") +  
+  facet_wrap(~ milieu_residence)  # Séparer les graphiques par groupe d'âge
+
+ggsave("../Image/repartition_type_ecole_milieu_residence_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+### situation mat
+
+```{r}
+# Créer un tableau des proportions par age_group 
+df_region <- data |> 
+  filter(age<=16 ) |> 
+  group_by(sit_mat_enfant,age_group, milieu_residence) |> 
+    summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(age_group,milieu_residence) |> 
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+
+
+
+
+
+
+
+# Tracer le graphique en barres groupées
+ggplot(df_region, aes(x = age_group, y = pourcentage, fill = sit_mat_enfant)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), 
+            position = position_dodge(width = 0.9), vjust = -0.5) +  # Ajouter les valeurs sur les barres
+  scale_fill_manual(values = c( "darkblue","darkred")) +  # Personnaliser les couleurs
+  theme_classic() +
+  labs(
+    title = "Situation matrimoniale par âge(en %)",
+    x = "",
+    y = "Pourcentage",
+    fill = "Acte de naissance"
+  )
+```
+
+### Lien de parenté
+
+```{r}
+ #Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  
+  group_by(lien_cm, type_ecole) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , # Nombre d'individus par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(lien_cm) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(type_ecole, -pourcentage), y = pourcentage, fill = type_ecole)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "Type de formation",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 20, hjust = 1)) +  
+  facet_wrap(~ lien_cm)  # Séparer les graphiques par groupe d'âge
+
+ggsave("../Image/repartition_type_ecole_lien_cm_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+### acte de naissance
+
+```{r}
+ #Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  
+  group_by(acte_naissance, type_ecole, milieu_residence) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , # Nombre d'individus par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(acte_naissance, milieu_residence) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(type_ecole, -pourcentage), y = pourcentage, fill = type_ecole)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "Type de formation",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none",axis.text.x = element_text(angle = 20, hjust = 1)) +  
+  facet_grid(milieu_residence~ acte_naissance)  # Séparer les graphiques par groupe d'âge
+
+ggsave("../Image/repartition_type_ecole_acte_naissance_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+acte de naissance et rural urbain
+
+```{r}
+#Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  
+  group_by(acte_naissance, milieu_residence) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , # Nombre d'individus par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(milieu_residence) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(acte_naissance, -pourcentage), y = pourcentage, fill = acte_naissance)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "Possession d'acte de naissance",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none") +  
+  facet_wrap(~ milieu_residence)  # Séparer les graphiques par groupe d'âge
+
+ggsave("../Image/repartition_milieu_naissance_acte_naissance_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+### alphabétisation
+
+```{r}
+#Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  
+  group_by(Alphabet, age_group) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , # Nombre d'individus par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(Alphabet) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(age_group, -pourcentage), y = pourcentage, fill = age_group)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none") +  
+  facet_wrap(~ Alphabet)  # Séparer les graphiques par groupe d'âge
+
+ggsave("../Image/repartition_groupe_age_alphabet_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+### CSP du pere / CSP de la mere
+
+```{r}
+#Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  
+  group_by(Csp_pere, type_ecole) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , # Nombre d'individus par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(Csp_pere) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(type_ecole, -pourcentage), y = pourcentage, fill = type_ecole)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "Type de formation",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none",axis.text.x = element_text(angle = 20, hjust = 1)) +  
+  facet_wrap(~ Csp_pere)  # Séparer les graphiques par groupe d'âge
+
+ggsave("../Image/repartition_type_ecole_Csp_pere_ehcvm.png", width = 10, height = 7, dpi = 300)
+
+```
+
+```{r}
+#Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  
+  group_by(Csp_mere, type_ecole) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , # Nombre d'individus par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(Csp_mere) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(type_ecole, -pourcentage), y = pourcentage, fill = type_ecole)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "Type de formation",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none",axis.text.x = element_text(angle = 20, hjust = 1)) +  
+  facet_wrap(~ Csp_mere)  # Séparer les graphiques par groupe d'âge
+
+ggsave("../Image/repartition_type_ecole_Csp_mere_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+### niveau d'étude du père et de la mere et du CM
+
+```{r}
+#Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  
+  group_by(Niveau_etude_mere, type_ecole) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , # Nombre d'individus par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(Niveau_etude_mere) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(type_ecole, -pourcentage), y = pourcentage, fill = type_ecole)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "Type de formation",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none",axis.text.x = element_text(angle = 20, hjust = 1)) +  
+  facet_wrap(~ Niveau_etude_mere)  # Séparer les graphiques par groupe d'âge
+
+ggsave("../Image/repartition_type_ecole_Niveau_etude_mere_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+```{r}
+#Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16) |>  
+  group_by(Niveau_etude_pere, type_ecole) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , # Nombre d'individus par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(Niveau_etude_pere) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(type_ecole, -pourcentage), y = pourcentage, fill = type_ecole)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "Type de formation",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none") +  
+  facet_wrap(~ Niveau_etude_pere)  # Séparer les graphiques par groupe d'âge
+
+ggsave("../Image/repartition_type_ecole_Niveau_etude_pere_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+### Indice economique
+
+```{r}
+# Préparation des données sans pondération
+data_plot <- data %>%
+  filter(!is.na(wealth_index_ACM_q), !is.na(niveau_etude_2019_2020)) %>%
+  group_by(wealth_index_ACM_q, niveau_etude_2019_2020) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(wealth_index_ACM_q) %>%
+  mutate(prop = 100 * n / sum(n))
+
+# Graphique amélioré
+ggplot(data_plot, aes(x = wealth_index_ACM_q, y = prop, fill = niveau_etude_2019_2020)) +
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d(option = "D", name = "Niveau d'études") +
+  labs(
+    x = "Indice économique (quintile)",
+    y = "Pourcentage",
+    title = "Répartition des niveaux d'études par indice économique"
+  ) +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_text(face = "bold")
+  )
+
+
+```
+
+```{r}
+
+# Préparation des données sans pondération
+data_plot <- data %>%
+  filter(!is.na(wealth_index_ACM_q), !is.na(frequente_2019_2020)) %>%
+  group_by(wealth_index_ACM_q, frequente_2019_2020) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(wealth_index_ACM_q) %>%
+  mutate(prop = 100 * n / sum(n))
+
+# Graphique amélioré
+ggplot(data_plot, aes(x = wealth_index_ACM_q, y = prop, fill = frequente_2019_2020)) +
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d(option = "D", name = "Fréquentation scolaire") +
+  labs(
+    x = "Indice économique (quintile)",
+    y = "Pourcentage",
+    title = "Répartition de la fréquentation scolaire par indice économique"
+  ) +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_text(face = "bold")
+  )
+```
+
+## focus sur ceux qui ont fait une ecole formelle
+
+```{r}
+#Créer un tableau des proportions
+df_region <- data |> 
+  filter(age <= 16 & type_ecole=="ecole formelle") |>  
+  group_by(age_group,milieu_residence, Niveau_etude_enfant) |>  
+  summarise(
+    total_n = sum(poids, na.rm = TRUE),  # Poids total par type d'école et groupe d'âge
+    nb = n() , # Nombre d'individus par type d'école et groupe d'âge
+    .groups="drop" 
+  ) |> 
+  group_by(age_group,milieu_residence) |>  # S'assurer que le pourcentage est calculé par groupe d'âge
+  mutate(
+    pourcentage = (total_n / sum(total_n)) * 100, .groups="drop"  # Pourcentage par groupe d'âge
+  ) |> 
+  ungroup()
+
+# Tracer le graphique en barres
+ggplot(df_region, aes(x = reorder(Niveau_etude_enfant, -pourcentage), y = pourcentage, fill = Niveau_etude_enfant)) +
+  geom_bar(stat = "identity", color = "black") + 
+  geom_text(aes(label = round(pourcentage, 1)), vjust = -0.5) +  
+  scale_fill_manual(values = c("darkred", "darkred", "darkred", "darkred")) +  
+  theme_classic() +
+  labs(#Répartition des types d'école par groupe d'âge
+    title = "",
+    x = "",
+    y = "Pourcentage"
+  ) +
+  theme(legend.position = "none",axis.text.x = element_text(angle = 20, hjust = 1)) +  
+  facet_grid(milieu_residence~ age_group)  # Séparer les graphiques par groupe d'âge
+
+```
+
+```{r}
+
+# niveau d'étude actuel
+
+
+ggplot(data |> 
+         filter(age <= 16 & type_ecole=="ecole formelle") |> 
+         group_by(age_group,milieu_residence), 
+       aes(x = Niveau_etude_enfant, weight = poids)) +  # Appliquer le poids du ménage
+  geom_bar(fill = "darkred", color = "black", width = 1) +  
+  theme_classic() +
+  labs(#Répartition des Niveau_etude_enfant_actuelle par groupe d'âge
+    title = "",
+    x = "",
+    y = "Fréquence pondérée"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Améliorer la lisibilité
+  ) +
+  facet_grid(milieu_residence~ age_group)  # Séparer par groupe d'âge
+
+ggsave("../Image/repartition_type_ecole_Niveau_etude_enfant_ehcvm.png", width = 10, height = 7, dpi = 300)
+```
+
+```{r}
+ggplot(data |> 
+         filter(age <= 16, type_ecole == "ecole formelle") |> 
+         group_by(age_group, milieu_residence), 
+       aes(x = Niveau_etude_enfant, weight = poids)) +  # Appliquer le poids du ménage
+  geom_bar(fill = "darkred", color = "black", width = 1) +  
+  theme_classic() +
+  labs(
+    title = "Répartition du niveau d'étude par groupe d'âge et milieu",
+    x = "Niveau d'étude",
+    y = "Fréquence pondérée"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Améliorer la lisibilité
+  ) +
+  facet_grid(milieu_residence ~ age_group)  # Facet par milieu (lignes) et âge (colonnes)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Préparer les données avec les pourcentages pondérés
+df_region <- data |> 
+  filter(age <= 16, type_ecole == "ecole formelle") |> 
+  group_by(age_group, milieu_residence, Niveau_etude_enfant) |> 
+  summarise(
+    poids_total = sum(poids, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  group_by(age_group, milieu_residence) |> 
+  mutate(
+    total_groupe = sum(poids_total, na.rm = TRUE),
+    pourcentage = (poids_total / total_groupe) * 100
+  ) |> 
+  ungroup()
+
+# Graphique en pourcentage
+ggplot(df_region, aes(x = Niveau_etude_enfant, y = pourcentage, fill = Niveau_etude_enfant)) +
+  geom_bar(stat = "identity", color = "black",fill = "darkred") +
+  geom_text(aes(label = paste0(round(pourcentage, 1), "%")), vjust = -0.5, size = 3) +
+  facet_grid(milieu_residence ~ age_group) +
+  theme_classic() +
+  labs(#Répartition (%) du niveau d'étude des enfants (par âge et milieu)
+    title = "",
+    x = "Niveau d'étude",
+    y = "Pourcentage pondéré"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    legend.position = "none"
+  ) 
+  #scale_fill_brewer(palette = "Set3")  # Palette douce, modifiable
+  
+
+```
+
+```{r}
+# niveau de diplome:
+
+
+
+# Préparer les données avec les pourcentages pondérés
+df_region <- data |> 
+  filter(age <= 16, type_ecole == "ecole formelle") |> 
+  group_by(age_group, milieu_residence, diplome_plus_eleve) |> 
+  summarise(
+    poids_total = sum(poids, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  group_by(age_group, milieu_residence) |> 
+  mutate(
+    total_groupe = sum(poids_total, na.rm = TRUE),
+    pourcentage = (poids_total / total_groupe) * 100
+  ) |> 
+  ungroup()
+
+# Graphique en pourcentage
+ggplot(df_region, aes(x = diplome_plus_eleve, y = pourcentage, fill = diplome_plus_eleve)) +
+  geom_bar(stat = "identity", color = "black",fill = "darkred") +
+  geom_text(aes(label = paste0(round(pourcentage, 1), "%")), vjust = -0.5, size = 3) +
+  facet_grid(milieu_residence ~ age_group) +
+  theme_classic() +
+  labs(#Répartition (%) du niveau d'étude des enfants (par âge et milieu)
+    title = "",
+    x = "Niveau d'étude",
+    y = "Pourcentage pondéré"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  ) 
+  #scale_fill_brewer(palette = "Set3")  # Palette douce, modifiable
+  
+```
+
+# contruction des variables cibles
+
+## temps d'abandon
+
+```{r}
+table(data |> 
+    filter(age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non") |> 
+    select(derniere_annee_frequente), useNA = "ifany")
+
+
+data<-data |> 
+    mutate(
+        frequente_2020_2021=case_when(
+        age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non" & derniere_annee_frequente==9999 & age-age_debut_ecole<=3~"Oui",
+        TRUE~frequente_2020_2021),
+        
+        duree_etude_avant_abandon=case_when(
+        age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non" & derniere_annee_frequente==9999 & Niveau_etude_enfant=="Maternelle" & age>=12~ 2 ,
+        
+         age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non" & derniere_annee_frequente==9999 & Niveau_etude_enfant %in% c("Primaire","Secondaire 1er cycle")  & derniere_classe_frequente=="1ére année"~ 3 ,
+        
+    age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non" & derniere_annee_frequente==9999 & Niveau_etude_enfant %in% c("Primaire","Secondaire 1er cycle")  & derniere_classe_frequente=="2ème année"~ 3, 
+    
+     age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non" & derniere_annee_frequente==9999 & Niveau_etude_enfant %in% c("Primaire","Secondaire 1er cycle")  & derniere_classe_frequente=="3ème année"~ 4, 
+    
+    age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non" & derniere_annee_frequente==9999 & Niveau_etude_enfant=="Primaire" & derniere_classe_frequente=="4ème année"~ 5, 
+    
+      age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non" & derniere_annee_frequente==9999 & Niveau_etude_enfant=="Primaire" & derniere_classe_frequente=="5ème année"~ 6, 
+    
+      age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non" & derniere_annee_frequente==9999 & Niveau_etude_enfant=="Primaire" & derniere_classe_frequente=="6ème année"~ 7,
+    
+     age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non" & derniere_annee_frequente==9999 & Niveau_etude_enfant=="Secondaire 1er cycle" & diplome_plus_eleve=="Aucun" ~ 7,
+    
+     age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non" & derniere_annee_frequente==9999 & Niveau_etude_enfant=="Secondaire 1er cycle" & diplome_plus_eleve=="CEPE" ~ 8,
+    
+    age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Non"~ (derniere_annee_frequente - (2022 - age)) - age_debut_ecole,
+    
+     age<=16 & type_ecole=="ecole formelle" & frequente_2020_2021=="Oui"~age-age_debut_ecole,
+    
+    TRUE~0
+    ),
+    duree_etude_avant_abandon=ifelse(duree_etude_avant_abandon<0, NA,duree_etude_avant_abandon))
+
+```
+
+```{r}
+ggplot(data |> filter( age<=16 & type_ecole=="ecole formelle" ), aes(x = duree_etude_avant_abandon, weight = poids)) +  # Poids de sondage appliqué à chaque individu
+  geom_bar(fill = "darkred", color = "black", width = 1) +  
+  theme_classic() +
+  labs(
+    title = "",
+    x = "durée abandon",
+    y = "Fréquence pondérée"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold")  # Centrer et mettre en gras le titre
+  )
+```
+
+## type d'école
+
+```{r}
+ table(data |> 
+             filter(age<=16) |> 
+             select(type_ecole), useNA = "ifany")
+```
+
+# merging de toutes les bases
+
+```{r}
+
+# recuperer la variable taille du ménage et nbre des enfants de moins 6 à 16 dans un menage
+
+taille <- ehcvm_2021 |> 
+  select(menage, grappe, age) |> 
+  group_by(grappe,menage) |>  
+  summarise(
+    taille_menage = n(),  # Nombre total de membres dans le ménage
+    enfants_6_16 = sum(age >= 6 & age <= 16, na.rm = TRUE)  # Comptage des enfants 6-16 ans
+  ) |> 
+  ungroup()  # Retirer le groupement pour éviter des erreurs plus tard
+
+
+# Fusionner avec left_join
+data <- left_join(data, taille,  by = c("grappe", "menage"))
+    
+
+
+colnames(data)
+```
+
+# 
+
+## MODELE ECONOMETRIQUE:
+
+donnéés
+
+```{r}
+
+# Sélection des variables qualitatives pertinentes
+vars_qual <- c("type_ecole", "sexe", "milieu_residence","region" , "presence_pere", 
+               "presence_mere", "Niveau_etude_pere", "Niveau_etude_mere","sexe_cm", 
+               "Csp_pere", "Csp_mere", "sit_mat_cm",  "Niveau_etude_cm" , "Csp_cm" ,
+               "wealth_index_ACM_q", "age_group","acte_naissance","lien_cm",  "Alphabet"  )
+
+#trop de na:  "cat_socio_CM", "sit_mat_pere", ,  "sit_mat_mere"
+
+# Filtrer les données pour supprimer les valeurs manquantes sur les variables clés
+data_modele <- data %>% 
+    filter(age<=16 & type_ecole !="") |>  
+    select(all_of(vars_qual), poids, age, age_debut_ecole, dtot, taille_menage,enfants_6_16, pcexp,age_cm, grappe,menage,s01q00a, duree_etude_avant_abandon) |> 
+    mutate(dtot_tete=dtot/taille_menage) |> 
+    select(-dtot)%>% 
+    filter(if_any(-age_debut_ecole, ~ !is.na(.)))  # Supprime les NA sauf dans age_debut_ecole
+    
+    
+    #na.omit()
+
+
+
+```
+
+```{r}
+# Calculer le pourcentage de valeurs manquantes par variable
+missing_percent <- sapply(data_modele, function(x) sum(is.na(x)) / length(x) * 100)
+
+# Afficher le résultat
+missing_percent
+
+```
+
+\#"frequente_2019_2020" "result_2019_2020"\
+#\[31\] "raison_abandon_2019_2020" "niveau_etude_2019_2020" "classe_2019_2020"\
+#\[34\] "derniere_annee_frequente" "Niveau_etude_enfant" "frequente_2020_2021"\
+#\[37\] "diplome_plus_eleve" "Niveau_etude_enfant_actuelle" "derniere_classe_frequente"\
+#\[40\] "menage_id" "salaire_total" "salaire_tete"\
+\[43\] "salaire_CM" "salaire_pere" "salaire_mere"\
+\[46\] "employeur_CM" "employeur_pere" "employeur_mere"\
+\[49\] "nombre_de_mois_CM" "nombre_de_mois_pere" "nombre_de_mois_mere"\
+\[52\] "transferts_total" "transferts_tete" "source_cm"\
+\[55\] "provenance_cm" "motif_cm" "transferts_cm"\
+\[58\] "source_pere" "provenance_pere" "motif_pere"\
+\[61\] "transferts_pere" "source_mere" "provenance_mere"\
+\[64\] "motif_mere" "transferts_mere" "pcexp"\
+\[67\] "zref" "dali"\
+\[70\] "dnal" "dtot"\
+\[73\] "duree_etude_avant_abandon"
+
+```{r}
+
+# Sauvegarder un dataframe R en format Stata (.dta)
+write_dta(data_modele, "../clean_data/base_final_type_formation.dta")
+
+```

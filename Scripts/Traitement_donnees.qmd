@@ -1,0 +1,1187 @@
+---
+title: "Traitement_des_données"
+author: "Nouboussi & Cissé"
+format: pdf
+editor: visual
+---
+
+## chargement des library utiles
+
+```{r}
+library(haven)
+library(dplyr)
+library(FactoMineR)
+library(factoextra)
+library(dplyr)
+library(dplyr)
+library(stringr)
+library(questionr)
+library(ggplot2)
+library(readxl)
+library(writexl)
+library(survey)
+library(tidyr)
+library(foreign)
+library(haven)
+```
+
+## Chargement de la section
+
+```{r}
+data <- read_dta("../Raw_data/Fichiers_Menage&Individus/sectionO1_select.dta")
+
+data <- data |> mutate(across(where(is.labelled), as_factor))
+
+```
+
+## La section 0
+
+ici, je vais tabuler toutes les varibales retenues dans la section zero pour sortir des statistiques descriptives de cette partie. certaines variables seront justes à titre informatif et ne serviront pas dans le modèle. donc la la fin de la section on va selectionner les variables qui iront dans le modèle:
+
+```{r}
+tables <- data |> 
+  select(s00q01, s00q02, s00q04, s00q07b, s00q08) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+
+```
+
+Pas de NA suivant ces variables. les jeunes sont assez équilibrez par région. ainsi que par milieu rural. et au moins 70% vive,t dans leur localité depuis plus de 5 ans.
+
+NB: juste la variables region et milieu de residence / arrondissement nous interessent ici
+
+**prend s00q07B pour une stat desc a presente**r
+
+```{r}
+# renpmmmer la variable sexe
+data <- data |> 
+  rename(
+    region = s00q01  ,
+    Departement = s00q02  , 
+    milieu_residence = s00q04  
+  )
+
+```
+
+## La section 1
+
+keep menage_id individu_id **s01q01** **s01q02** age age_cm **s01q05** **s01q07** **s01q07**\_cm **s01q07**\_pere **s01q07**\_mere **s01q08** **s01q08**\_cm **s01q08**\_pere **s01q08** \_mere s01q14 s01q15 s01q22 s01q23 s01q24 s01q25 s01q26 s01q27 s01q29 s01q30 s01q31 s01q32 s01q33 s01q34
+
+### lot 1: sexe, lien avec le cm, a un acte de naissance, et sit mat,
+
+```{r}
+tables <- data |> 
+    filter(age<=16) |> 
+  select( s01q01 , s01q02,  s01q05, s01q07, s01q07_cm,s01q07_pere ,s01q07_mere  ) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+```
+
+**tranche de 6 à 16 ans**
+
+50,3% sont des filles (pas de NA)
+
+52,9% dont les enfants du cm et 24,2% sont ses petits fils, 13,5% sont les neveux; Il n'ya pas de cm
+
+23% des enfants n'ont pas d'acte de naissance, et 1% non connu.
+
+rares sont mariés ou divorcés (0,4%)
+
+#### Correction du lot 1
+
+-regrouper lien avec le cm, 1 fils & filles, 2 petit fils & filles, 3 neveu/ niece, 4 autres
+
+-regrouper dispose acte de naissance: 1 oui , 2 non, 3 NC (y ajouter les na)
+
+-sit mat: traitement des NA puis recategorisation, 1 celibataire, 2 marié ou veuf, 3 nc pour les NA non corrigé
+
+```{r}
+data<-data |> 
+    mutate(lien_cm=as.factor(ifelse(s01q02=="Fils, Fille", "enfant",
+                             ifelse(s01q02=="Petit fils, petite fille", "petit enfant",
+                             ifelse(s01q02=="Neveu/Nièce", "Neveu/Niece","Autres")))),
+           acte_naissance=as.factor(ifelse(is.na(s01q05),"NC" ,as.character(s01q05))),
+           sit_mat_enfant= as.factor(ifelse(is.na(s01q07)& age<=13,"Célibataire", 
+                              ifelse(s01q07 %in%  c("Marié(e) monogame", "Marié(e) polygame","Union libre","Veuf(ve)","Divorcé(e)" ,"Séparé(e)"        ),"Marié(e)/Divorcé(e)", as.character(s01q07) ))))
+
+prop.table(table(data$lien_cm, useNA = "ifany"))
+prop.table(table(data$acte_naissance, useNA = "ifany"))
+prop.table(table(data$sit_mat_enfant, useNA = "ifany"))
+```
+
+Quelques verifications de la situation mat
+
+-   du cm
+
+```{r}
+tables <- data |> 
+    filter(age<=16) |> 
+  select( lien_cm, s01q07_cm,s01q08_cm   ) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+
+
+data |> 
+    select(s01q07_cm,s01q08_cm) |> 
+    table()
+
+# cette variable est fiable
+```
+
+-   du pere
+
+```{r}
+tables <- data |> 
+    filter(age<=16 ) |> 
+  select( lien_cm, s01q07_pere,s01q08_pere  ) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+
+
+data |> 
+    
+    select(s01q07_pere,s01q08_pere) |> 
+    table()
+
+# cette variable est fiable
+```
+
+-   de la mère
+
+```{r}
+
+tables <- data |> 
+    filter(age<=16) |> 
+  select( lien_cm, s01q07_pere,s01q08_pere  ) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+
+
+data |> 
+    
+    select(s01q07_mere,s01q08_mere) |> 
+    table()
+
+# cette variable est fiable
+
+```
+
+```{r}
+# renpmmmer la variable sexe
+data <- data |> 
+  rename(
+    sexe = s01q01 ,
+    sit_mat_cm = s01q07_cm , 
+    sit_mat_pere = s01q07_pere ,
+    sit_mat_mere = s01q07_mere,
+  )
+
+```
+
+NB: on garde la sexe, lien_cm, acte_naissance et sit_mat de l'enfant, du pere du cm et de la mere
+
+### lot 2: religion et nationalité
+
+```{r}
+tables <- data |> 
+    filter(age<=16) |> 
+  select( s01q14 , s01q15) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+
+```
+
+**tranche de 6 à 16 ans**
+
+99% sont de nationalité sénégalaise.
+
+97% sont mulsumans
+
+NB: on va laisser ces variables
+
+### lot 3: Presence du parent, son niveau d'instruction et sa CSP
+
+##### importation de nouvelles données pour corriger certaines variables de cette partie:
+
+```{r}
+ehcvm_2021 <- read_dta("../Raw_data/Fichiers_Traitement&AnalysePauvrete/ehcvm_individu_SEN2021.dta")  
+ehcvm_2021<- ehcvm_2021 |> 
+    mutate(across(where(is.labelled), as_factor))
+
+#creation de l'id de l'individu
+ehcvm_2021<-ehcvm_2021 |> 
+    mutate(individu_id= paste(grappe, menage,numind))
+
+#cretation de l'id == l'id du pere
+
+data<-data |> 
+    mutate(individu_id= paste(grappe, menage,s01q23))
+
+
+# jointure de la base 
+data <- data |> 
+  left_join(ehcvm_2021 |> 
+                select(individu_id, csp,educ_hi), by = "individu_id") |> 
+    select(-individu_id) |> 
+    rename(Csp_pere=csp,
+           Niveau_etude_pere=educ_hi)
+
+#cretation de l'id == l'id de la mere
+
+data<-data |> 
+    mutate(individu_id= paste(grappe, menage,s01q30))
+
+
+# jointure de la base 
+data <- data |> 
+  left_join(ehcvm_2021 |> 
+                select(individu_id, csp,educ_hi), by = "individu_id") |> 
+    select(-individu_id) |> 
+    rename(Csp_mere=csp,
+           Niveau_etude_mere=educ_hi)
+
+
+# information sur le CM
+
+data <- data %>%
+  left_join(ehcvm_2021 %>% filter(lien== "Chef de ménage") %>% 
+              select(grappe, menage, educ_hi, csp, sexe) |> 
+                rename(sexe_ehcvm=sexe), 
+            by = c("grappe", "menage")) %>%
+  rename(Niveau_etude_cm = educ_hi,
+         Csp_cm =csp,
+         sexe_cm=sexe_ehcvm)
+
+```
+
+sssd
+
+```{r}
+tables <- data |> 
+    filter(age<=16) |> 
+  select( s01q22 , s01q24,s01q25, s01q26, s01q27 ) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+```
+
+**tranche de 6 à 16 ans**
+
+60,8% des pères sont présent dans le ménage, 31,3% sont décédés et 7,2% dans la nature
+
+#### Correction du lot 3:
+
+```{r}
+data <- data |> 
+    mutate( presence_pere = as.factor( ifelse(s01q22 == "Oui", "Oui",
+                                       ifelse(s01q24 == "Non","Non décédé", as.character(s01q22)))),
+            presence_pere= as.factor(ifelse(is.na(presence_pere) & lien_cm=="enfant", "Oui",
+                                    ifelse(is.na(presence_pere) & lien_cm %in% c("Autres", "Neveu/Niece"),"Non",
+                                     ifelse(is.na(presence_pere) & lien_cm %in% c("petit enfant"),"Oui", as.character(presence_pere))) )),
+            
+            s01q25= ifelse(s01q25 %in% c("Post-secondaire (préparation diplômes niveau BAC+2)","Supérieur" ), "Superieur",
+                              ifelse(s01q25 %in% c("Secondaire 1 (Post Primaire) Général","Secondaire 1 (Post Primaire) Technique", "Secondaire 1er cycle" ), "Secondaire 1er cycle",
+                              ifelse(s01q25 %in% c("Secondaire 2 Général","Secondaire 2 Technique", "Secondaire 2e cycle" ), "Secondaire 2e cycle",as.character(s01q25)
+                                     )
+                              )
+            ),
+            s01q25=ifelse(s01q25 %in% c("Ne sait pas"), "Aucun",as.character(s01q25)),
+
+           Niveau_etude_pere= ifelse(Niveau_etude_pere %in% c("Second. gl 1", "Second. tech. 1"),"Secondaire 1er cycle", 
+                                     ifelse(Niveau_etude_pere %in% c("Second. gl 2", "Second. tech. 2"),"Secondaire 2e cycle",
+                                            ifelse(Niveau_etude_pere %in% c("Postsecondaire"),"Superieur",as.character(Niveau_etude_pere)))
+            
+            ), 
+           
+           s01q25=case_when(
+               s01q25=="" ~ Niveau_etude_pere,
+                TRUE ~s01q25
+           ),
+           s01q25=case_when(
+               s01q25 %in% c("", is.na(s01q25)) ~ "Non déterminé",
+              is.na(s01q25) ~ "Non déterminé",
+               s01q25=="Maternelle"~  "Aucun",
+                TRUE ~s01q25
+           ),
+           Csp_pere=case_when(
+               is.na(Csp_pere)~s01q27,
+               TRUE ~Csp_pere
+           ),
+           
+           Csp_pere = case_when(
+               Csp_pere== "Ouvrier ou employé simple"~ "Ouvrier/employé non qualifié",
+               Csp_pere %in% c("Ouvrier ou employé non qualifié", "Manœuvre",
+                               "Manœuvre, aide ménagère")~ "Ouvrier/employé non qualifié",
+               Csp_pere== "Ouvrier ou employé qualifié"~ "Ouvrier/employé qualifié",
+              Csp_pere %in% c("Stagiaire ou  Apprenti non rénuméré", "Stagiaire ou Apprenti non rénuméré",
+                              "Stagiaire ou Apprenti rénuméré", "Stagière ou Apprenti rénuméré")~ "Stagiaire/Apprenti",
+              Csp_pere %in% c("Travailleur familial contribuant à une entreprise familiale", 
+                              "Travailleur Familial contribuant pour une entreprise familial")~ "Travailleur Familial",
+              Csp_pere %in% c("Patron", " Patron/Employeur")~ "Patron/Employeur", 
+              Csp_pere %in% c("","Ne sait pas")~ "Non déterminée", 
+              Csp_pere %in% c("Cadre moyen","Cadre supérieur", "Cadre moyen/agent de maîtrise")~ "Cadre", 
+              TRUE~Csp_pere
+              
+               
+               
+               
+           )
+       
+            
+            )
+ 
+data |> 
+       select(presence_pere) |> 
+       pull(presence_pere) |> 
+       table(useNA = "ifany")
+
+data |> 
+       select(s01q25) |> 
+       pull(s01q25) |> 
+       table(useNA = "ifany")
+
+```
+
+[La suite des caractéristique du père vont etre reconsiderer depuis statat et corrigé dans R.]{.underline}
+
+**caractéristique de la mère et du CM**
+
+```{r}
+tables <- data |> 
+    filter(age<=16) |> 
+  select( s01q29 , s01q31,s01q32, s01q33, s01q34 ) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+```
+
+```{r}
+data <- data |> 
+    mutate(presence_mere = as.factor( ifelse(s01q29 == "Oui", "Oui",
+                                       ifelse(s01q31 == "Non","Non décédé", as.character(s01q29)))),
+            presence_mere = as.factor(ifelse(is.na(presence_mere) & lien_cm=="enfant", "Oui",
+                                    ifelse(is.na(presence_mere) & lien_cm %in% c("Autres", "Neveu/Niece"),"Non",
+                                     ifelse(is.na(presence_mere) & lien_cm %in% c("petit enfant"),"Oui", as.character(presence_mere))) )),
+            s01q32= as.factor(ifelse(s01q32 %in% c("Post-secondaire (préparation diplômes niveau BAC+2)","Supérieur" ), "Supérieur",
+                              ifelse(s01q32 %in% c("Secondaire 1 (Post Primaire) Général","Secondaire 1 (Post Primaire) Technique", "Secondaire 1er cycle" ), "Secondaire 1er cycle",
+                              ifelse(s01q32 %in% c("Secondaire 2 Général","Secondaire 2 Technique", "Secondaire 2e cycle" ), "Secondaire 2e cycle",as.character(s01q32))
+                                     )
+                              )
+            ),
+           
+           Niveau_etude_mere= ifelse(Niveau_etude_mere %in% c("Second. gl 1", "Second. tech. 1"),"Secondaire 1er cycle", 
+                                     ifelse(Niveau_etude_mere %in% c("Second. gl 2", "Second. tech. 2"),"Secondaire 2e cycle",
+                                            ifelse(Niveau_etude_mere %in% c("Postsecondaire"),"Superieur",as.character(Niveau_etude_mere)))
+            
+            ),
+            Niveau_etude_mere=case_when(
+               Niveau_etude_mere=="" ~ "Non déternimé",
+                is.na(Niveau_etude_mere) ~ "Non déternimé",
+               Niveau_etude_mere=="Maternelle"~  "Aucun",
+               TRUE ~Niveau_etude_mere
+           ),
+           
+              Niveau_etude_cm= ifelse(Niveau_etude_cm %in% c("Second. gl 1", "Second. tech. 1"),"Secondaire 1er cycle", 
+                                     ifelse(Niveau_etude_cm %in% c("Second. gl 2", "Second. tech. 2"),"Secondaire 2e cycle",
+                                            ifelse(Niveau_etude_cm %in% c("Postsecondaire"),"Superieur",as.character(Niveau_etude_cm)))
+            
+            ),
+            Niveau_etude_cm=case_when(
+               Niveau_etude_cm=="" ~ "Non déternimé",
+                is.na(Niveau_etude_cm) ~ "Non déternimé",
+               Niveau_etude_cm=="Maternelle"~  "Aucun",
+               TRUE ~Niveau_etude_cm
+           ),
+           
+           
+           
+           Csp_mere=case_when(
+               is.na(Csp_mere)~s01q34,
+               TRUE ~Csp_mere
+           ),
+           
+          Csp_mere = case_when(
+               Csp_mere== "Ouvrier ou employé simple"~ "Ouvrier/employé non qualifié",
+               Csp_mere %in% c("Ouvrier ou employé non qualifié", "Manœuvre",
+                               "Manœuvre, aide ménagère")~ "Ouvrier/employé non qualifié",
+               Csp_mere== "Ouvrier ou employé qualifié"~ "Ouvrier/employé qualifié",
+              Csp_mere %in% c("Stagière ou Apprenti rénuméré", "Stagiaire ou Apprenti non rénuméré", "Stagiaire ou Apprenti rénuméré", "Stagière ou Apprenti rénuméré", "Stagiaire ou  Apprenti non rénuméré")~ "Stagiaire/Apprenti",
+              Csp_mere %in% c("Travailleur Familial contribuant pour une entreprise familial", 
+                              "Travailleur familial contribuant à une entreprise familiale")~ "Travailleur Familial",
+              Csp_mere %in% c("Patron", " Patron/Employeur")~ "Patron/Employeur", 
+              Csp_mere %in% c("","Ne sait pas")~ "Non déterminée", 
+              Csp_mere %in% c("Cadre moyen","Cadre supérieur", "Cadre moyen/agent de maîtrise")~ "Cadre", 
+              TRUE~Csp_mere
+              
+               
+               
+               
+           ), 
+          
+          
+           Csp_cm = case_when(
+               Csp_cm== "Ouvrier ou employé simple"~ "Ouvrier/employé non qualifié",
+               Csp_cm %in% c("Ouvrier ou employé non qualifié", "Manœuvre",
+                               "Manœuvre, aide ménagère")~ "Ouvrier/employé non qualifié",
+               Csp_cm== "Ouvrier ou employé qualifié"~ "Ouvrier/employé qualifié",
+              Csp_cm %in% c("Stagière ou Apprenti rénuméré", "Stagiaire ou Apprenti non rénuméré", "Stagiaire ou Apprenti rénuméré", "Stagière ou Apprenti rénuméré", "Stagiaire ou  Apprenti non rénuméré")~ "Stagiaire/Apprenti",
+              Csp_cm %in% c("Travailleur Familial contribuant pour une entreprise familial", 
+                              "Travailleur familial contribuant à une entreprise familiale")~ "Travailleur Familial",
+              Csp_cm %in% c("Patron", " Patron/Employeur")~ "Patron/Employeur", 
+              Csp_cm %in% c("","Ne sait pas")~ "Non déterminée", 
+              Csp_cm %in% c("Cadre moyen","Cadre supérieur", "Cadre moyen/agent de maîtrise")~ "Cadre", 
+              TRUE~Csp_cm
+              
+               
+               
+               
+           )
+           
+           
+           
+           
+           
+           )
+ 
+data |> 
+       select(presence_mere) |> 
+       pull(presence_mere) |> 
+       table(useNA = "ifany")
+
+
+
+data |> 
+       select(Niveau_etude_mere) |> 
+       pull(Niveau_etude_mere) |> 
+       table(useNA = "ifany")
+
+data |> 
+       select(Niveau_etude_cm) |> 
+       pull(Niveau_etude_cm) |> 
+       table(useNA = "ifany")
+
+data |> 
+       select(Csp_cm) |> 
+       pull(Csp_cm) |> 
+       table(useNA = "ifany")
+
+```
+
+**NB: je doute que la varible CSP de la mere soit fiable**
+
+```{r}
+
+data<-data |> 
+    select(-Niveau_etude_pere) |> 
+    rename(
+        Niveau_etude_pere = s01q25#, 
+        #CSP_pere= s01q27,
+        #niveau_etude_plus_eleve_mere=s01q32,
+        #CSP_mere=s01q34
+        
+    )
+
+
+```
+
+## Selection de la base corrigée
+
+```{r}
+data<- data |> 
+            select(grappe,menage,s01q00a ,poids, region, Departement,milieu_residence,sexe,sexe_cm, lien_cm,acte_naissance,starts_with("sit_mat"),
+                   age, age_cm, starts_with("presence"),starts_with("Niveau"),starts_with("Csp"))
+
+
+library(labelled)  
+
+# Vérifier et convertir les variables catégorielles en labels  
+data_labelled <- data  
+
+# Si certaines variables ont des valeurs numériques mais que tu veux sauvegarder avec des labels  
+data_labelled <- data_labelled |> mutate(across(where(is.labelled), to_factor))  
+
+# Sauvegarder en Stata  
+write_dta(data_labelled, "../clean_data/section01_correct.dta")  
+
+```
+
+## Chargement de la section 2
+
+```{r}
+library(haven)
+data <- read_dta("../Raw_data/Fichiers_Menage&Individus/section2_select.dta")
+
+data <- data |> mutate(across(where(is.labelled), as_factor))
+```
+
+### Lot 1: Aphabétisation
+
+on va regrouper en ces variables
+
+-savoir_lire_ecrire_français
+
+-savoir_lire_ecrire_langue_locale (uniquement)
+
+-savoir_lire_ecrire_autres_langue(uniquement)
+
+-comprendre_français
+
+-comprendre_langue_locale (uniquement)
+
+-comprendre_autre (uniquement)
+
+tabulation des variables lire et ecrire en une langue
+
+```{r}
+tables <- data |> 
+    filter(age<=16) |> 
+  select( s02q01__1,s02q01__2, s02q01__3,s02q02__1,s02q02__2, s02q02__3,s02q02a__1,s02q02a__2,s02q02a__3  ) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+```
+
+creation de la variable alphabet
+
+```{r}
+data <- data |> 
+    mutate(
+        Alphabet = case_when(
+            is.na(s02q01__1) & is.na(s02q02__1) ~ NA_character_,  # Les deux NA → NA
+            s02q01__1 == "Oui" & s02q02__1 == "Oui" ~ "Alphabétisé français",      # Les deux Oui → "Oui"
+            TRUE ~ "Non"                                           # Tout le reste → "Non"
+        ),
+        
+        Alphabet = case_when(
+            Alphabet == "Alphabet français" ~ "Alphabétisé français",  # Conserver "Oui"
+            
+            # Vérifier si la personne sait lire ou écrire en langue locale
+            (Alphabet %in% c("Non", NA)) & 
+            (s02q01__2 == "Oui" | s02q02__2 == "Oui") ~ "Non Alphabétisé",
+            
+            # Vérifier si la personne sait lire/écrire en une autre langue
+            (Alphabet %in% c("Non", NA)) & 
+            (s02q01__3 == "Oui" | s02q02__3 == "Oui") ~ "Alphabétisé autre langue",
+            
+            # Vérifier si la personne sait lire/écrire en une autre langue
+            (Alphabet %in% c("Non"))  ~ "Non Alphabétisé",
+            
+            # Sinon, conserver la valeur existante
+            TRUE ~ Alphabet
+        ),
+        Alphabet = as.factor(Alphabet) # Conversion en facteur
+    )
+```
+
+stat desc sur les enfant de moins de 16 ans
+
+```{r}
+tables <- data |> 
+    filter(age<=16) |> 
+  select( Alphabet  ) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+```
+
+NB: on garde seulement la var Alphabet
+
+### Lot 2: ecole formelle ou informelle
+
+```{r}
+tables <- data |> 
+    filter(age<=16) |> 
+  select( s02q03,s02q05,s02q06,  s02q07 ,s02q08 ,  s02q10 , s02q11 
+  ) |> 
+  lapply(function(var) {
+    df <- as.data.frame(table(var, useNA = "ifany"))
+    df$Pourcentage <- round(100 * df$Freq / sum(df$Freq), 1)  # Calcul du %
+    return(df)
+  })
+
+for (var in names(tables)) {
+  cat("\n==== Tableau des fréquences pour", var, "====\n")
+  print(tables[[var]])
+}
+```
+
+```{r}
+data<- data |>
+    mutate(type_ecole=case_when(
+        
+            s02q03 == "Oui"  ~ "ecole formelle",
+            s02q05 == "Oui" ~ "ecole non formelle",
+            s02q03 == "Non" & s02q05 == "Non"  ~ "Aucune formation", 
+            Alphabet == "Analphabet" ~"Aucune formation",
+            TRUE ~ NA ),
+           s02q29=ifelse(type_ecole %in% c("Aucune formation","ecole non formelle" ),"hors système", as.character(s02q29)),
+           s02q29= as.factor(ifelse(s02q29 %in% c("Post-secondaire (préparation diplômes niveau BAC+2)","Supérieur" ), "Supérieur",
+                              ifelse(s02q29 %in% c("Secondaire 1 (Post Primaire) Général","Secondaire 1 (Post Primaire) Technique", "Secondaire 1er cycle" ), "Secondaire 1er cycle",
+                              ifelse(s02q29 %in% c("Secondaire 2 Général","Secondaire 2 Technique", "Secondaire 2e cycle" ), "Secondaire 2e cycle",as.character(s02q29))
+                                     )
+                              ) ),
+           s02q33=as.factor(case_when(
+               type_ecole %in% c("Aucune formation","ecole non formelle" )~"hors système",
+               s02q33=="Aucun" & s02q29=="Secondaire 1er cycle" ~"CEPE",
+               s02q33=="Aucun" & s02q29=="Secondaire 2e cycle" ~"BEPC",
+               s02q33=="CEPE" & s02q29=="Secondaire 2e cycle" ~"BEPC",
+               s02q33=="BEPC" & s02q29=="Supérieur" ~"BAC",
+               s02q33=="CAP" & s02q29=="Supérieur" ~"BAC",
+                TRUE ~ as.character(s02q33)
+               
+           )),
+           
+           s02q14= as.factor(ifelse(s02q14 %in% c("Post-secondaire (préparation diplômes niveau BAC+2)","Supérieur" ), "Supérieur",
+                              ifelse(s02q14 %in% c("Secondaire 1  (Post Primaire) générale","Secondaire 1  (Post Primaire) technique", "Secondaire 1er cycle" ), "Secondaire 1er cycle",
+                              ifelse(s02q14 %in% c("Secondaire 2 générale","Secondaire 2 technique", "Secondaire 2e cycle" ), "Secondaire 2e cycle",as.character(s02q14))
+                                     )
+                              ) )
+           
+           )
+```
+
+**quelques verifications**
+
+```{r}
+#quelle année a til frequenté pour la dernier fois et type ecole
+table(data  |> select(s02q32,type_ecole), useNA ="ifany" )# bon pour aucune formation
+
+#diplome le plus elevé
+table(data  |> select(s02q33,type_ecole), useNA ="ifany" )
+```
+
+```{r}
+# age de début d'école
+data |> 
+    group_by(type_ecole) |> 
+
+    summarise(
+        age_moyen = mean(s02q07, na.rm = TRUE),  # Moyenne d'âge
+        age_min = min(s02q07, na.rm = TRUE),  # Âge minimum
+        age_max = max(s02q07, na.rm = TRUE),  # Âge maximum
+        n = n()  # Nombre d'observations)
+    )
+
+#
+data |> 
+    pull(s02q07) |>  # Extrait la colonne sous forme de vecteur
+    hist(main = "Histogramme de l'âge de début d'école", 
+         xlab = "Âge de début d'école", 
+         ylab = "Fréquence", 
+         col = "lightblue", 
+         border = "black")
+
+# avoir frequenté en 2029/2020
+
+prop.table(table(data|> select(s02q03,s02q08), useNA ="ifany" ))# juste pour les ecoles formelles
+
+```
+
+### Lot3:
+
+```{r}
+#cretation de l'id == l'id de l'enfant
+
+data<-data |> 
+    mutate(individu_id= paste(grappe, menage,s01q00a))
+
+# jointure de la base 
+data <- data |> 
+  left_join(ehcvm_2021 |> 
+                 rename(age_corrige=age)|>
+                select(individu_id,educ_hi,age_corrige, educ_scol,scol,diplome), by = "individu_id") |> 
+    select(-individu_id) |> 
+    rename(Niveau_etude_enfant=educ_hi,
+           Niveau_etude_enfant_actuelle=educ_scol,
+           frequente_2020_2021=scol,
+           diplome_plus_eleve=diplome)
+```
+
+```{r}
+data<-data |> 
+    mutate(Niveau_etude_enfant= ifelse(Niveau_etude_enfant %in% c("Second. gl 1", "Second. tech. 1"),"Secondaire 1er cycle", 
+                                     ifelse(Niveau_etude_enfant %in% c("Second. gl 2", "Second. tech. 2"),"Secondaire 2e cycle",
+                                            ifelse(Niveau_etude_enfant %in% c("Postsecondaire"),"Superieur",as.character(Niveau_etude_enfant)))),
+            Niveau_etude_enfant_actuelle= ifelse(Niveau_etude_enfant_actuelle %in% c("Second. gl 1", "Second. tech. 1"),"Secondaire 1er cycle", 
+                                     ifelse(Niveau_etude_enfant_actuelle %in% c("Second. gl 2", "Second. tech. 2"),"Secondaire 2e cycle",
+                                            ifelse(Niveau_etude_enfant_actuelle %in% c("Postsecondaire"),"Superieur",as.character(Niveau_etude_enfant_actuelle)))
+            
+            ))
+
+data |> 
+      filter(age<=16)|>
+       select(Niveau_etude_enfant_actuelle) |> 
+       pull(Niveau_etude_enfant_actuelle) |> 
+       table(useNA = "ifany")
+```
+
+```{r}
+table(data |>filter(age<=16)|> select(Niveau_etude_enfant,s02q14 ), useNA =  "ifany" )
+```
+
+```{r}
+# renpmmmer les variables
+data <- data |> 
+  rename(
+    age_debut_ecole = s02q07,
+    frequente_2019_2020= s02q08,
+    result_2019_2020= s02q10,
+    raison_abandon_2019_2020= s02q11,
+    niveau_etude_2019_2020= s02q14,
+    classe_2019_2020= s02q16,
+    #niveau_etude_plus_eleve= s02q29,
+    derniere_annee_frequente=s02q32,
+     derniere_classe_frequente=s02q31
+    #diplome_plus_eleve= s02q33
+  )
+
+```
+
+```{r}
+table(data|> 
+          filter(age<=16) |> 
+          select(niveau_etude_2019_2020), useNA = "ifany")
+
+table(data |> 
+          filter(age<=16) |> 
+          select(Niveau_etude_enfant), useNA = "ifany")
+```
+
+NB: dans cette partie on garde les var type_ecole, age de but d'école, avoir frequenté en 2019/2020, resultat année 2020, raison de l'abandon, niveau d'étude en 2020/2021, classe frequenté, NIVEAUd'étude le plus evele. diplome le plus evele
+
+## Selection de la base corrigée
+
+```{r}
+data<- data |> 
+            select(grappe,menage,s01q00a ,type_ecole, Alphabet, age_debut_ecole,ends_with("2019_2020"),derniere_annee_frequente,Niveau_etude_enfant,frequente_2020_2021,diplome_plus_eleve,Niveau_etude_enfant_actuelle,
+                   ends_with("eleve"),  derniere_classe_frequente)
+
+# Sauvegarder un dataframe R en format Stata (.dta)
+write_dta(data, "../clean_data/section2_correct.dta")
+```
+
+
+
+
+
+## Chargement de la section
+
+```{r}
+logement = read_dta("../Raw_data/Fichiers_Menage&Individus/sectionO1_select.dta")
+avoirs = read_dta("../Raw_data/Fichiers_Menage&Individus/section12_select.dta")
+poids = read_dta("../Raw_data/Fichiers_Menage&Individus/ehcvm_ponderations_SEN2021.dta")
+logement <- logement |> mutate(across(where(is.labelled), as_factor))
+avoirs <- avoirs |> mutate(across(where(is.labelled), as_factor))
+```
+
+## Calcul de l'indice économique
+
+### Mettre dans le bon format
+```{r}
+avoirs <- avoirs %>%
+  pivot_wider(names_from = s12q01, values_from = s12q02)
+```
+
+```{r}
+avoirs <- avoirs %>%
+  rename(
+    cuisiniere_gaz = `Cuisinière à gaz ou électrique`,
+    tapis = Tapis,
+    camera_video = `Caméra Vidéo`,
+    tondeuse_jardin = `Tondeuse à gazon et autre article de jardinage`,
+    ventilateur = `Ventilateur sur pied`,
+    camescope = Camescope,
+    refrigerateur = Réfrigérateur,
+    appareil_tv = `Appareil TV`,
+    fer_charbon = `Fer à repasser à charbon`,
+    bonbonne_gaz = `Bonbonne de gaz`,
+    moto = `Cyclomoteur/Vélomoteur, motocyclette`,
+    magnetoscope = `Magnétoscope/CD/DVD`,
+    foyers_ameliores = `Foyers améliorés`,
+    appareil_photo = `Appareil photo`,
+    antenne_parabolique = `Antenne parabolique / décodeur`,
+    four_microonde = `Four à micro-onde ou électrique`,
+    robot_cuisine = `Robot de cuisine électrique (Moulinex)`,
+    mixeur = `Mixeur/Presse-fruits non électrique`,
+    piano = `Piano et autre appareil de musique`,
+    groupe_electrogene = `Groupe électrogène`,
+    aspirateur = Aspirateur,
+    tel_fixe = `Téléphone fixe`,
+    fer_electrique = `Fer à repasser électrique`,
+    table_manger = `Table à manger  (table + chaises)`,
+    armoires_meubles = `Armoires et autres meubles`,
+    matelas_simple = `Matelas simple`,
+    voiture = `Voiture personnelle`,
+    congelateur = Congélateur,
+    lave_linge = `Lave-linge, sèche linge`,
+    velo = `Bicyclette/Vélo de course`,
+    lit = Lit,
+    ordinateur = Ordinateur,
+    guitare = Guitare,
+    climatisation = `Climatiseurs/Splits amovibles`,
+    fusils_chasse = `Fusils de chasse`,
+    radio = `Radio simple/Radiocassette`,
+    rechaud = `Réchaud (plaque) à gaz ou électrique`,
+    chaine_hifi = `Chaîne Hi Fi`,
+    imprimante = `Imprimante/Fax`,
+    pirogue = `Pirogue et hors-bord (bateaux de plaisance)`,
+    salon = `Salon  (Fauteuils et table basse)`,
+    maison = `Immeuble/Maison`,
+    tel_portable = `Téléphone portable`,
+    terrain_non_bati = `Terrain non bâti`,
+    tablette = Tablette
+  )
+```
+
+
+### Eliminer les variables qui ne discriminent pas assez
+```{r}
+avoirs <- avoirs %>% select(-age, -s01q00a)
+avoirs = distinct(avoirs)
+avoirs <- avoirs %>%
+  distinct(grappe, menage, .keep_all = TRUE)
+avoirs = merge(avoirs, poids, c("grappe", "menage"), all.x = TRUE)
+```
+
+
+```{r}
+# Sélection des variables économiques
+vars_econ <- c(
+  "cuisiniere_gaz", "tapis", "camera_video", "tondeuse_jardin", "ventilateur", "camescope", 
+  "refrigerateur", "appareil_tv", "fer_charbon", "bonbonne_gaz", "moto", "magnetoscope", 
+  "foyers_ameliores", "appareil_photo", "antenne_parabolique", "four_microonde", "robot_cuisine", 
+  "mixeur", "piano", "groupe_electrogene", "aspirateur", "tel_fixe", "fer_electrique", 
+  "table_manger", "armoires_meubles", "matelas_simple", "voiture", "congelateur", 
+  "lave_linge", "velo", "lit", "ordinateur", "guitare", "climatisation", "fusils_chasse", 
+  "radio", "rechaud", "chaine_hifi", "imprimante", "pirogue", "salon", "maison", "tel_portable", 
+  "terrain_non_bati", "tablette"
+)
+
+# Initialisation du tableau de résultats
+resultats <- data.frame()
+
+# Boucle sur chaque variable
+for (var in vars_econ) {
+  
+  # Filtrer les valeurs non manquantes
+  temp_data <- avoirs %>%
+    filter(!is.na(.data[[var]])) %>%
+    select(.data[[var]])
+  
+  # Calculer les pourcentages non pondérés
+  total <- nrow(temp_data)
+  oui_percent <- mean(temp_data[[var]] == "Oui") * 100
+  non_percent <- mean(temp_data[[var]] == "Non") * 100
+  
+  # Ajouter à la table des résultats
+  resultats <- bind_rows(resultats, data.frame(variable = var, Oui = oui_percent, Non = non_percent))
+}
+
+# Arrondir les résultats
+resultats <- resultats %>%
+  mutate(Oui = round(Oui, 2), Non = round(Non, 2))
+
+# Trier les variables par % de "Oui"
+percentages <- resultats %>%
+  arrange(desc(Oui)) %>%
+  select(variable, Oui)
+
+# Afficher sous forme de tableau
+flextable(percentages)
+
+```
+
+
+```{r}
+# Garder seulement les variables entre 5% de "Oui"
+vars_selected <- percentages$variable[which(percentages$Oui > 7)]
+
+# Enlever les doublons
+my_list <- unique(vars_selected)
+
+# Afficher la liste propre
+print(my_list)
+
+# Filtrer les données pour ne garder que ces variables pertinentes
+data_pca <- avoirs %>%
+  select(all_of(my_list), grappe, menage, poids)
+
+# Vérifier les variables retenues
+print(names(data_pca))
+```
+### Quelques recodages
+
+```{r}
+
+data_pca <- data_pca %>%
+  mutate(across(c(my_list),
+         ~ case_when(
+           . == "Oui" ~ paste("a un", cur_column()), 
+           . == "Non" ~ paste("n'a pas de", cur_column()), 
+           TRUE ~ as.character(.)
+         )))
+```
+
+```{r}
+table(logement$s11q04)
+
+logement <- logement %>%
+  mutate(s11q04 = case_when(
+    s11q04 %in% c("Propriétaire avec titre ou acte de propriété", 
+                 "Propriétaire sans titre ou acte de propriété", 
+                 "Copropriétaire avec titre ou acte", 
+                 "Copropriétaire sans titre ni acte") ~ "Propriétaire",
+    s11q04 == "Locataire" ~ "Locataire",
+    s11q04 %in% c("Logé gratuitement (parents, amis)", 
+                 "Logé par l'employeur") ~ "Logé"
+  ))
+
+
+table(logement$s11q54)
+
+
+logement <- logement %>%
+  mutate(s11q54 = case_when(
+    s11q54 == "Aucune toilette (dans la nature)" ~ "Aucune toilette",
+    s11q54 %in% c("Autre (à préciser)", "Toilettes publiques") ~ "Autre",
+    s11q54 %in% c("Fosse rudimentaire/trou ouvert", "Latrines dallées simplement", 
+                     "Latrines ECOSAN (dallées, couvertes)", "Latrines SANPLAT (dallées, non couvertes)", 
+                     "Latrines VIP (dallées, ventillées)") ~ "Latrines",
+    s11q54 %in% c("W.C. ext. avec chasse d'eau", "W.C. ext. chasse d'eau manuelle",
+                     "W.C. int. avec chasse d'eau", "W.C. int. chasse d'eau manuelle") ~ "WC",
+    TRUE ~ "Autre"  # Précaution si d'autres valeurs existent
+  ))
+
+logement <- logement %>%
+  mutate(s11q21 = case_when(
+    s11q21 == "Oui" ~ "Eau courante",
+    s11q21 %in% c("Non") ~ "Pas d'eau",
+    TRUE ~ "Autre" 
+  ))
+
+```
+
+```{r}
+# Supprimer les variables inutiles
+logement <- logement %>%
+  select(-s01q00a, -age)
+```
+
+```{r}
+# Ajout de base des logements
+merged_df <- merge(data_pca, logement, by = c("grappe", "menage"), all.x = TRUE)
+df_pca <- merged_df %>%
+  rename(
+    logement = s11q01,
+    statut = s11q04,
+    materiau = s11q18,
+    toit = s11q19,
+    sol = s11q20,
+    eau = s11q21,
+    energie = s11q37,
+    toilettes = s11q54
+  )
+names(df_pca)
+```
+
+
+```{r}
+# Convertir en facteurs
+vars_to_factor <- c(
+  "tel_portable", "matelas_simple", "lit", "bonbonne_gaz", "appareil_tv", "armoires_meubles",
+  "ventilateur", "fer_charbon", "refrigerateur", "tapis", "salon", "radio",
+  "foyers_ameliores", "antenne_parabolique", "table_manger", "moto", "congelateur", "velo",
+  "terrain_non_bati", "poids", "logement", "statut", "materiau", "toit", "sol",
+  "eau", "energie", "toilettes"
+)
+df_pca <- df_pca %>%
+  mutate(across(all_of(vars_to_factor), as.factor))
+
+df_pca <- df_pca %>%
+  mutate(across(where(is.factor), ~ replace_na(., names(sort(table(.), decreasing = TRUE))[1])))
+
+
+```
+
+
+### Run PCA
+
+```{r}
+
+res.mca <- MCA(df_pca, quali.sup = c("menage", "grappe", "poids"), graph = TRUE)
+
+var_contrib_dim1 <- res.mca$var$contrib[, 1]
+
+top_vars <- names(sort(var_contrib_dim1, decreasing = TRUE))[1:10]
+
+fviz_mca_var(res.mca, select.var = list(name = top_vars), repel = TRUE)
+
+
+p <- fviz_mca_biplot(res.mca, 
+                     repel = TRUE, select.var = list(name = top_vars), 
+                     label = "var") +  
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+          panel.background = element_rect(fill = "white"),
+plot.background = element_rect(fill = "white"))
+
+p <- p + annotate("segment", x = 0.5, xend = -0.5, y = 1.2, yend = 1.2, arrow = arrow(length = unit(0.3, "cm")), color = "red") +
+  annotate("text", x = -0, y = 1.3, label = "Sens du niveau de richesse", color = "red", size = 3.5, hjust = 0.5)
+
+print(p)
+ggsave(filename = "C:/Users/LENOVO/Desktop/pca.png", plot = p, width = 10, height = 8)
+```
+
+
+###classification hierarchique
+
+```{r}
+
+# Récupérer les coordonnées des individus après PCA (seulement les axes importants)
+data_clustering <- res.mca$ind$coord[, 1]  # Sélectionner les 3 premières composantes
+
+# Vérifier les données
+head(data_clustering)
+
+# Calcul de la matrice de distances
+dist_matrix <- dist(data_clustering, method = "euclidean")
+
+# Classification hiérarchique avec méthode de Ward
+hc <- hclust(dist_matrix, method = "ward.D2")
+
+# Affichage du dendrogramme
+plot(hc, labels = FALSE, main = "Classification Hiérarchique des Individus", cex = 0.8)
+
+
+# Déterminer le nombre optimal de classes avec un "coupe" du dendrogramme
+fviz_nbclust(data_clustering, FUN = hcut, method = "wss")  # Méthode du coude
+
+```
+
+```{r}
+
+library(NbClust)
+nb_clusters <- NbClust(data_clustering, distance = "euclidean", min.nc = 2, max.nc = 6, method = "ward.D2")
+
+
+# Découper en 5 classes 
+clusters <- cutree(hc, k = 5)
+
+# Ajouter les clusters aux données originales
+df_final <- df_pca %>%
+  mutate(cluster = as.factor(clusters))
+
+# Vérifier les groupes
+table(df_final$cluster,df_final$s11q01 )
+```
+
+La classification hierarchique ne marche pas trop..
+
+```{r}
+coords = res.mca$ind$coord
+wealth_index_ACM_q = -coords[, 1]
+# Normaliser les scores entre 0 et 100
+wealth_index_ACM_q_normalized <- (wealth_index_ACM_q - min(wealth_index_ACM_q)) / (max(wealth_index_ACM_q) - min(wealth_index_ACM_q)) * 100
+
+# Ajouter l'indice de richesse normalisé à la base de données
+df_final = df_pca %>% mutate(wealth_index_ACM_q = wealth_index_ACM_q_normalized)
+
+ggplot(df_final, aes(x = wealth_index_ACM_q_normalized)) + geom_histogram(binwidth = 15, fill = "blue", color = "black", alpha = 0.7) +
+  labs(title = "Distribution de l'indice économique", x = "Score économique", y = "Fréquence") +theme_minimal()
+
+# Compute weighted quintiles (returns 5 breakpoints)
+quintiles <- wtd.quantile(df_final$wealth_index_ACM_q, 
+                          weights = df_final$poids, 
+                          probs = seq(0, 1, by = 0.2))
+
+# Découpage en catégories
+df_final$wealth_index_ACM_q <- cut(df_final$wealth_index_ACM_q, 
+                                   breaks = quintiles, 
+                                   include.lowest = TRUE, 
+                                   labels = c("Les plus pauvres", "Les pauvres", "Les médians", "Les aisés", "Les plus aisés"))
+
+```
+
+### Sélection et enregistrement des variables nécessaires
+
+```{r}
+df_final = df_final %>% select(grappe, menage, wealth_index_ACM_q)
+write_dta(df_final, path = "C:/Users/LENOVO/Desktop/ENSAE_PARIS/3A/TP_SDS/Data/Final/indice_eco.dta")
+```
+
